@@ -1,0 +1,11 @@
+#!/bin/bash
+# Prune unused Docker build cache + images, then TRIM so Windows can reclaim the space.
+set -e
+before=$(df -BG --output=used / | tail -1)
+echo "== docker builder prune"; docker builder prune -af
+echo "== docker image prune";   docker image prune -af
+echo "== uv cache clean";      if command -v uv >/dev/null; then uv cache clean; else echo "uv not found, skipping"; fi
+echo "== fstrim";              sudo fstrim -av
+after=$(df -BG --output=used / | tail -1)
+echo "Used: ${before// } -> ${after// }"
+echo "To shrink the vhdx: in PowerShell run 'wsl --shutdown' then Optimize-VHD (or diskpart compact vdisk)."

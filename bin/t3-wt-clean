@@ -1,0 +1,21 @@
+#!/bin/bash
+# Remove T3 worktrees that are clean, fully pushed, idle >=12h, and not in use.
+# usage: t3-wt-clean [--apply]   (default is a dry run)
+APPLY=$1; now=$(date +%s); cut=$((now-12*3600))
+busy=$(for p in /proc/[0-9]*; do readlink $p/cwd 2>/dev/null; done | grep '/.t3/worktrees/' | awk -F/ '{print $6"/"$7}' | sort -u)
+cd ~/.t3/worktrees || exit 1
+for d in */*/; do d=${d%/}
+  echo "$busy" | grep -qx "$d" && { echo "KEEP busy $d"; continue; }
+  gd=$(git -C "$d" rev-parse --absolute-git-dir 2>/dev/null) || { echo "KEEP nogit $d"; continue; }
+  [ "$(git -C "$d" rev-parse --show-toplevel)" = "$PWD/$d" ] || { echo "KEEP notroot $d"; continue; }
+  lc=$(git -C "$d" log -1 --format=%ct 2>/dev/null || echo $now)
+  im=$(stat -c %Y "$gd/HEAD" "$gd/logs/HEAD" 2>/dev/null | sort -n | tail -1)
+  { [ "${lc:-$now}" -gt $cut ] || [ "${im:-$now}" -gt $cut ]; } && { echo "KEEP recent $d"; continue; }
+  [ -n "$(find "$d" \( -name node_modules -o -name .git -o -name dist -o -name .next -o -name .turbo \) -prune -o -newermt "@$cut" -print -quit 2>/dev/null)" ] && { echo "KEEP touched $d"; continue; }
+  [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ] && { echo "KEEP dirty $d"; continue; }
+  up=$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null)
+  [ "$up" != "0" ] && { echo "KEEP unpushed($up) $d"; continue; }
+  if [ "$APPLY" = --apply ]; then
+    if err=$(git -C "$d" worktree remove "$PWD/$d" 2>&1); then echo "REMOVED $d"; else echo "FAIL $d ${err%%$'\n'*}"; fi
+  else echo "WOULD-REMOVE $d"; fi
+done

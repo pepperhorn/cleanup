@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# t3-wt-sweep — bulk-clean a folder of git worktrees (e.g. ~/.t3/worktrees/<repo>)
+#
+# For every worktree NOT touched in the last KEEP days:
+#   1. commits any uncommitted work as a WIP commit (detached HEAD gets a wip/ branch)
+#   2. backs up .env* files (gitignored, so otherwise lost) to ~/t3-env-backup/
+#   3. removes the worktree folder
+# Branches are always KEPT, so no commits are lost. Prune merged branches afterwards.
+#
+# Usage: t3-wt-sweep [-n] [-k DAYS] [-b MB] WORKTREES_DIR
+#   -n       dry run: report and show actions, change nothing
+#   -k DAYS  skip worktrees active within DAYS (default 2)
+#   -b MB    skip worktrees with untracked, non-ignored files over MB (default 50)
+set -uo pipefail
+DRY=0; KEEP=2; BIG_MB=50
+while getopts "nk:b:" o; do
+  case $o in n) DRY=1;; k) KEEP=$OPTARG;; b) BIG_MB=$OPTARG;; *) sed -n '2,15p' "$0"; exit 1;; esac
+done
+shift $((OPTIND-1)); DIR=${1:?usage: t3-wt-sweep [-n] [-k DAYS] WORKTREES_DIR}; DIR=${DIR%/}
+BK=~/t3-env-backup/$(date +%Y%m%d-%H%M)
+run() { if ((DRY)); then echo "    [dry] $*"; else "$@"; fi; }
+now=$(date +%s)
+
+# Find the main repo and its default branch from any worktree
+first=$(for d in "$DIR"/*/; do [[ -e $d.git ]] && { echo "${d%/}"; break; }; done)
+[[ -n $first ]] || { echo "No worktrees found in $DIR"; exit 1; }
+common=$(git -C "$first" rev-parse --path-format=absolute --git-common-dir)
+main=$(dirname "$common")
+base=$(git -C "$main" symbolic-ref -q --short refs/remotes/origin/HEAD) ||
+  for b in main master; do git -C "$main" show-ref -q --verify "refs/heads/$b" && { base=$b; break; }; done
+echo "Repo: $main   base: $base   keep if active within ${KEEP}d"
+echo
+
+declare -a todo=()
+printf "%-10s %5s %6s %4s  %-8s  %s\n" "LAST-COMMIT" "DIRTY" "AHEAD" "AGE" "ACTION" "WORKTREE"
+for d in "$DIR"/*/; do
+  wt=${d%/}; name=${wt##*/}
+  if [[ ! -e $wt/.git ]]; then printf "%-10s %5s %6s %4s  %-8s  %s\n" - - - - "notgit" "$name"; continue; fi
+  gd=$(git -C "$wt" rev-parse --absolute-git-dir 2>/dev/null) ||
+    { printf "%-10s %5s %6s %4s  %-8s  %s\n" - - - - "broken" "$name"; continue; }
+  t=$(stat -c %Y "$wt"); ti=$(stat -c %Y "$gd/index" 2>/dev/null || echo 0); ((ti>t)) && t=$ti
+  last=$(git -C "$wt" log -1 --format=%cs 2>/dev/null)
+  dirty=$(git --no-optional-locks -C "$wt" status --porcelain 2>/dev/null | wc -l)  # no index rewrite
+  ahead=$(git -C "$wt" rev-list --count "$base..HEAD" 2>/dev/null || echo "?")
+  age=$(( (now - t) / 86400 ))
+  act=remove; ((age < KEEP)) && act=keep
+  printf "%-10s %5s %6s %3sd  %-8s  %s\n" "$last" "$dirty" "$ahead" "$age" "$act" "$name"
+  [[ $act == remove ]] && todo+=("$wt")
+done
+
+echo; echo "${#todo[@]} worktrees to remove (branches kept)."
+((${#todo[@]})) || exit 0
+if ((!DRY)); then read -rp "Proceed? [y/N] " a </dev/tty; [[ $a =~ ^[Yy] ]] || exit 0; fi
+
+ok=0; skipped=0
+for wt in "${todo[@]}"; do
+  name=${wt##*/}; echo "==> $name"
+  big=$(cd "$wt" && git ls-files -o --exclude-standard -z | while IFS= read -r -d '' f; do
+          [[ -f $f ]] && (( $(stat -c%s "$f") > BIG_MB*1024*1024 )) && echo "$f"; done)
+  if [[ -n $big ]]; then
+    echo "    SKIPPED: untracked files over ${BIG_MB}MB:"; sed 's/^/      /' <<<"$big"; skipped=$((skipped+1)); continue
+  fi
+  if [[ -n $(git --no-optional-locks -C "$wt" status --porcelain) ]]; then
+    if ! git -C "$wt" symbolic-ref -q HEAD >/dev/null; then
+      run git -C "$wt" switch -q -c "wip/$name" || { echo "    SKIPPED: could not create branch"; skipped=$((skipped+1)); continue; }
+    fi
+    run git -C "$wt" add -A &&
+    run git -C "$wt" commit -q --no-verify -m "WIP: auto-commit before worktree cleanup" ||
+      { echo "    SKIPPED: commit failed"; skipped=$((skipped+1)); continue; }
+    echo "    committed uncommitted work"
+  fi
+  envs=$(cd "$wt" && find . -name node_modules -prune -o -type f -name '.env*' -print 2>/dev/null)
+  if [[ -n $envs ]]; then
+    ( cd "$wt" && while IFS= read -r f; do run mkdir -p "$BK/$name/$(dirname "$f")"; run cp -p "$f" "$BK/$name/$f"; done <<<"$envs" )
+    echo "    backed up $(wc -l <<<"$envs") .env file(s) to $BK/$name"
+  fi
+  if run git -C "$main" worktree remove --force --force "$wt"; then ok=$((ok+1)); echo "    removed"
+  else echo "    SKIPPED: remove failed"; skipped=$((skipped+1)); fi
+done
+run git -C "$main" worktree prune
+echo; echo "Removed $ok, skipped $skipped.$( ((DRY)) && echo ' (dry run: nothing changed)')"
+echo "Next, to drop branches already merged into $base:"
+echo "  git -C $main branch --merged $base | grep -vE '^\*|^\+|^ *$base\$' | xargs -r git -C $main branch -d"
