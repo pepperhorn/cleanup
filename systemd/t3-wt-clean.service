@@ -5,4 +5,4 @@ Description=Remove idle, clean, fully-pushed T3 worktrees
 Type=oneshot
 Nice=10
 IOSchedulingClass=idle
-ExecStart=/home/shaun/.local/bin/t3-wt-clean --apply
+ExecStart=%h/.local/bin/t3-wt-clean --apply

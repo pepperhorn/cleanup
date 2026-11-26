@@ -18,7 +18,7 @@ Disk housekeeping for the WSL dev box.
 - `bin/t3-wt-sweep`: interactive, aggressive sweep (auto-commits WIP, backs up `.env*`). Manual only.
 - `bin/wsl-slim`: manual Docker/uv prune and `fstrim`.
 - `systemd/`: units for `~/.config/systemd/user/`.
-- `windows/wsl-compact.ps1`: installed at `C:\Users\shaun\scripts\`. Supports `-DryRun`, `-Force`, `-ThresholdGB N`. Logs to `wsl-compact.log` next to it.
+- `windows/wsl-compact.ps1`: installed at `%USERPROFILE%\scripts\`. Supports `-DryRun`, `-Force`, `-ThresholdGB N`. Logs to `wsl-compact.log` next to it.
 - `windows/register-wsl-compact.ps1`: run once from an Admin PowerShell to register the task.
 
 ## Install
@@ -26,13 +26,13 @@ Disk housekeeping for the WSL dev box.
 ```bash
 cp bin/* ~/.local/bin/
 cp systemd/* ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now t3-wt-clean.timer
-cp windows/*.ps1 /mnt/c/Users/shaun/scripts/
+cp windows/*.ps1 /mnt/c/Users/<you>/scripts/
 ```
 
 Then, in an Admin PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File C:\Users\shaun\scripts\register-wsl-compact.ps1
+powershell -ExecutionPolicy Bypass -File $env:USERPROFILE\scripts\register-wsl-compact.ps1
 ```
 
-Logs: `journalctl --user -u t3-wt-clean`, `~/.local/state/docker-prune.log`, `C:\Users\shaun\scripts\wsl-compact.log`.
+Logs: `journalctl --user -u t3-wt-clean`, `~/.local/state/docker-prune.log`, `%USERPROFILE%\scripts\wsl-compact.log`.
